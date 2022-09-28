@@ -1,6 +1,7 @@
 import atexit
 import json
 import os
+import re
 import shutil
 import signal
 import sys
@@ -1555,6 +1556,21 @@ class Task(_Task):
                             config_type='dictionary', config_dict=configuration)
                     return configuration
 
+                if multi_config_support and remote_configuration is not None:
+                    # Find all internal configuration object references, here defined using the `@config.key` notation
+                    def _recurse_references(config_dict_):
+                        # type: (Dict[str, Any]) -> Dict[str, Any]
+                        result = dict()
+                        for k in config_dict_:
+                            match = re.match(r'(?<!\\)@config\.(?P<ref_name>[^\n]+)', config_dict_[k])
+                            if match is not None:
+                                match = match.groupdict()['ref_name']
+                                result[k] = _recurse_references(self._get_configuration_dict(name=match))
+                            else:
+                                result[k] = config_dict_[k]
+                        return result
+                    remote_configuration = _recurse_references(remote_configuration)
+
                 if not remote_configuration:
                     configuration = get_dev_config(configuration)
                 elif isinstance(configuration, dict):
@@ -1608,6 +1624,23 @@ class Task(_Task):
                             if configuration_path.suffixes and configuration_path.suffixes[-1] else 'file',
                             config_text=configuration_text)
                 return configuration
+
+            if multi_config_support:
+                # Find all internal configuration object references, here defined using the `@config.key` notation
+                def _recurse_references(configuration_text_):
+                    # type: (str) -> str
+
+                    def _resolve_text_references(match):
+                        # type: (re.Match) -> str
+                        return self._get_configuration_text(name=match.groupdict()['ref_name'])
+
+                    while re.findall(r'(?<!\\)@config\.([^\n]+)', configuration_text_):
+                        configuration_text_ = re.sub(r'(?<!\\)@config\.(?P<ref_name>[^\n]+)', _resolve_text_references,
+                                                     configuration_text_)
+
+                    return configuration_text_
+
+                configuration_text = _recurse_references(configuration_text)
 
             configuration_path = Path(configuration)
             fd, local_filename = mkstemp(prefix='clearml_task_config_',
